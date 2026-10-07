@@ -1,7 +1,9 @@
 import axios from 'axios';
 
+const API_BASE_URL = 'https://viva-system.onrender.com/api';
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -82,7 +84,7 @@ export const facultyService = {
   getStudentsDirectory: () => api.get('/faculty/students'),
   getResults: (vivaId) => api.get(`/faculty/vivas/${vivaId}/results`),
   getAllResults: (vivaId) => api.get('/faculty/results', { params: vivaId ? { viva_id: vivaId } : {} }),
-  getExportUrl: (vivaId) => `/api/faculty/vivas/${vivaId}/results/export`,
+  getExportUrl: (vivaId) => `${API_BASE_URL}/faculty/vivas/${vivaId}/results/export`,
 };
 
 // Admin Service
