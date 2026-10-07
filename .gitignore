@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+backend/.venv/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+
+# Node
+node_modules/
+frontend/dist/
+frontend/node_modules/
+.npm
+npm-debug.log*
+
+# Database & Data
+*.db
+*.sqlite
+backend/data/audio/*
+backend/data/uploads/*
+!backend/data/audio/.gitkeep
+!backend/data/uploads/.gitkeep
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary and artifact files
+ML_Viva_Questions_Formatted.*
+backend/update_admin.py
+backend/backend/
