@@ -71,4 +71,14 @@ def create_app(config_class=None):
     def server_error(e):
         return jsonify({"error": "Internal server error. Please try again later."}), 500
 
+    @app.errorhandler(Exception)
+    def handle_exception(e):
+        import logging
+        logging.getLogger(__name__).exception("Unhandled exception: %s", e)
+        # Pass through HTTP exceptions (4xx, 5xx) with their status code
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            return jsonify({"error": e.description}), e.code
+        return jsonify({"error": "An unexpected server error occurred.", "details": str(e)}), 500
+
     return app

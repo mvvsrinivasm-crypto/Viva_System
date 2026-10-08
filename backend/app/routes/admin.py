@@ -101,30 +101,52 @@ def get_all_results():
     """
     List all student viva results with complete details and audit indicators.
     ADMIN ONLY.
+    Optimized with batch aggregation and eager joined loading to prevent timeout.
     """
-    results = Result.query.join(VivaSession).order_by(Result.finalized_at.desc()).all()
+    from sqlalchemy.orm import joinedload
+
+    # Batch compute audit counts in a single query
+    audit_counts = dict(
+        db.session.query(MarkAudit.result_id, db.func.count(MarkAudit.id))
+        .group_by(MarkAudit.result_id)
+        .all()
+    )
+
+    results = (
+        Result.query
+        .options(
+            joinedload(Result.session).joinedload(VivaSession.student),
+            joinedload(Result.session).joinedload(VivaSession.viva),
+        )
+        .order_by(Result.finalized_at.desc())
+        .all()
+    )
 
     items = []
     for r in results:
         session = r.session
-        audit_count = r.audits.count()
+        if not session:
+            continue
+        audit_count = audit_counts.get(r.id, 0)
+        student = session.student
+        viva = session.viva
         item = {
             "result_id": r.id,
             "session_id": session.id,
             "student_id": session.student_id,
-            "student_name": session.student.name if session.student else "Student",
-            "student_email": session.student.email if session.student else "",
-            "student_reg_no": session.student.registration_number if session.student else "",
+            "student_name": student.name if student else "Student",
+            "student_email": student.email if student else "",
+            "student_reg_no": student.registration_number if student else "",
             "viva_id": session.viva_id,
-            "viva_title": session.viva.title if session.viva else "Viva",
+            "viva_title": viva.title if viva else "Viva",
             "status": session.status,
-            "q1_score": round(r.q1_score, 2),
-            "q2_score": round(r.q2_score, 2),
-            "q3_score": round(r.q3_score, 2),
+            "q1_score": round(r.q1_score, 2) if r.q1_score is not None else 0.0,
+            "q2_score": round(r.q2_score, 2) if r.q2_score is not None else 0.0,
+            "q3_score": round(r.q3_score, 2) if r.q3_score is not None else 0.0,
             "counted_question_1": r.counted_question_1,
             "counted_question_2": r.counted_question_2,
-            "final_score": round(r.final_score, 2),
-            "max_score": r.max_score,
+            "final_score": round(r.final_score, 2) if r.final_score is not None else 0.0,
+            "max_score": r.max_score or 20.0,
             "finalized_at": r.finalized_at.isoformat() if r.finalized_at else None,
             "has_been_edited": audit_count > 0,
             "audit_count": audit_count,
@@ -211,7 +233,17 @@ def get_mark_audits():
     ADMIN ONLY. Complete audit history of all mark edits.
     Returns: original score, edited score, edited by, reason, timestamp.
     """
-    audits = MarkAudit.query.order_by(MarkAudit.created_at.desc()).all()
+    from sqlalchemy.orm import joinedload
+    audits = (
+        MarkAudit.query
+        .options(
+            joinedload(MarkAudit.student),
+            joinedload(MarkAudit.editor),
+            joinedload(MarkAudit.result).joinedload(Result.session).joinedload(VivaSession.viva),
+        )
+        .order_by(MarkAudit.created_at.desc())
+        .all()
+    )
     return jsonify({"audits": [a.to_dict() for a in audits]}), 200
 
 

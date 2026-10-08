@@ -17,7 +17,7 @@ from app.models.session_question import SessionQuestion
 from app.models.answer import Answer
 from app.models.evaluation import Evaluation
 from app.models.result import Result
-from app.middleware.auth import faculty_required
+from app.middleware.auth import faculty_required, faculty_or_admin_required
 from app.services.pdf_service import PDFService, PDFExtractionError
 
 faculty_bp = Blueprint("faculty", __name__, url_prefix="/api/faculty")
@@ -129,10 +129,13 @@ def get_faculty_students():
 
 
 @faculty_bp.route("/vivas", methods=["GET"])
-@faculty_required
+@faculty_or_admin_required
 def get_faculty_vivas():
-    """List all vivas managed by current faculty."""
-    vivas = Viva.query.filter_by(faculty_id=g.current_user.id).order_by(Viva.created_at.desc()).all()
+    """List all vivas managed by current faculty, or all vivas if admin."""
+    if g.current_user.role == Role.ADMIN:
+        vivas = Viva.query.order_by(Viva.created_at.desc()).all()
+    else:
+        vivas = Viva.query.filter_by(faculty_id=g.current_user.id).order_by(Viva.created_at.desc()).all()
     return jsonify({"vivas": [v.to_dict() for v in vivas]}), 200
 
 
@@ -429,7 +432,7 @@ def get_attended_students(viva_id):
 
 
 @faculty_bp.route("/vivas/<int:viva_id>/results", methods=["GET"])
-@faculty_required
+@faculty_or_admin_required
 def get_viva_results(viva_id):
     """
     View attendance, final marks, question-wise scores, submitted transcripts, and AI evaluations.
@@ -437,7 +440,7 @@ def get_viva_results(viva_id):
     Returns both student-wise evaluated marks (student_summaries) and full chronological attempt records (results).
     """
     viva = db.session.get(Viva, viva_id)
-    if not viva or viva.faculty_id != g.current_user.id:
+    if not viva or (viva.faculty_id != g.current_user.id and g.current_user.role != Role.ADMIN):
         return jsonify({"error": "Viva not found."}), 404
 
     # Auto-expire/abandon any abandoned in-progress sessions past their expiration
