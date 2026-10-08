@@ -12,10 +12,7 @@ class Config:
     JWT_ACCESS_TOKEN_EXPIRES_HOURS = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_HOURS", "24"))
 
     # Database
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        "DATABASE_URL",
-        "postgresql://neondb_owner:npg_KzX74atmlRWB@ep-bold-fog-b55jjztk-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require",
-    )
+    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
     # Neon postgres compatibility: ensure 'postgresql://' instead of 'postgres://'
     if SQLALCHEMY_DATABASE_URI and SQLALCHEMY_DATABASE_URI.startswith("postgres://"):
         SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI.replace("postgres://", "postgresql://", 1)
@@ -33,7 +30,10 @@ class Config:
     # CORS
     CORS_ORIGINS = [
         origin.strip()
-        for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+        for origin in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:5173,http://127.0.0.1:5173,https://viva-system.vercel.app",
+        ).split(",")
         if origin.strip()
     ]
 

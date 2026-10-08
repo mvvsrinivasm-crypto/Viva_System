@@ -17,7 +17,15 @@ def create_app(config_class=None):
     migrate.init_app(app, db)
     cors.init_app(
         app,
-        resources={r"/api/*": {"origins": app.config.get("CORS_ORIGINS", "*")}},
+        resources={
+            r"/api/*": {
+                "origins": [
+                    r"^http://localhost(:\d+)?$",
+                    r"^http://127\.0\.0\.1(:\d+)?$",
+                    r"^https://.*\.vercel\.app$",
+                ]
+            }
+        },
         supports_credentials=True,
     )
 
