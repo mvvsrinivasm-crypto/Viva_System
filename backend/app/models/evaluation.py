@@ -19,6 +19,21 @@ class Evaluation(db.Model):
     evaluation_json = db.Column(db.JSON, nullable=True)
     evaluated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
+    @property
+    def improved_answer(self) -> str:
+        if self.evaluation_json:
+            if isinstance(self.evaluation_json, dict):
+                return self.evaluation_json.get("improved_answer", "") or ""
+            elif isinstance(self.evaluation_json, str):
+                try:
+                    import json
+                    d = json.loads(self.evaluation_json)
+                    if isinstance(d, dict):
+                        return d.get("improved_answer", "") or ""
+                except Exception:
+                    pass
+        return ""
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -26,6 +41,7 @@ class Evaluation(db.Model):
             "ai_score": self.ai_score,
             "max_score": self.max_score,
             "evaluation_reason": self.evaluation_reason,
+            "improved_answer": self.improved_answer,
             "evaluation_json": self.evaluation_json,
             "evaluated_at": self.evaluated_at.isoformat() if self.evaluated_at else None,
         }

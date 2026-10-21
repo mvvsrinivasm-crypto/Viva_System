@@ -16,6 +16,7 @@ import {
   RotateCcw,
   Sparkles,
   GraduationCap,
+  FileText,
 } from 'lucide-react';
 
 export const StudentVivaSession = () => {
@@ -68,6 +69,7 @@ export const StudentVivaSession = () => {
   const speechRecognitionRef = useRef(null);
   const liveTranscriptRef = useRef('');
   const violationTimerRef = useRef(null);
+  const recordedMimeTypeRef = useRef('audio/webm');
 
   // 1. Initial Load: Check session or prepare start gate
   useEffect(() => {
@@ -105,19 +107,34 @@ export const StudentVivaSession = () => {
           setCurrentQuestion(data.current_question);
           setTranscript(data.current_question.edited_transcript || '');
           setOriginalAsr(data.current_question.original_asr_transcript || '');
+        } else if (!data.is_completed && !data.terminated) {
+          setError('Failed to load viva questions. Please click retry to reload.');
+          setLoading(false);
+          return;
         }
 
         if (data.history) {
           setHistory(data.history);
         }
 
-        // Initialize server remaining seconds
-        if (data.session && data.session.expires_at) {
-          const now = new Date().getTime();
-          const exp = new Date(data.session.expires_at).getTime();
-          const rem = Math.max(0, Math.floor((exp - now) / 1000));
-          setRemainingSeconds(rem);
+        // Initialize server remaining seconds safely
+        let rem = null;
+        if (typeof data.session?.remaining_seconds === 'number' && data.session.remaining_seconds > 0) {
+          rem = data.session.remaining_seconds;
+        } else if (data.session && data.session.expires_at) {
+          const now = Date.now();
+          const expStr = data.session.expires_at.endsWith('Z') || data.session.expires_at.includes('+')
+            ? data.session.expires_at
+            : data.session.expires_at + 'Z';
+          const exp = new Date(expStr).getTime();
+          rem = Math.max(0, Math.floor((exp - now) / 1000));
         }
+
+        // If remaining seconds is 0 or invalid on an in-progress session, fall back to duration
+        if ((rem === null || rem <= 0) && !data.is_completed && !data.terminated) {
+          rem = data.session?.duration_seconds || 120;
+        }
+        setRemainingSeconds(rem);
 
         // Check if student was already in active violation countdown
         if (data.session && data.session.remaining_violation_seconds !== null) {
@@ -146,10 +163,24 @@ export const StudentVivaSession = () => {
     fetchSessionData();
   }, [vivaId]);
 
-  // 2. Authoritative Main Session Timer Countdown
-  // Timer pauses during AI evaluation (submitting === true) and resumes immediately when next question starts
+  // Ensure completed session retrieves final result if missing
   useEffect(() => {
-    if (!session || isCompleted || timeExpired || isTerminated || remainingSeconds === null || submitting) return;
+    if (isCompleted && !finalResult && session?.id) {
+      studentService.getSession(session.id)
+        .then((res) => {
+          if (res.data?.result) {
+            setFinalResult(res.data.result);
+          }
+        })
+        .catch(console.error);
+    }
+  }, [isCompleted, finalResult, session?.id]);
+
+  // 2. Authoritative Main Session Timer Countdown
+  // Timer pauses during AI evaluation (submitting === true) and resumes immediately when next question starts.
+  // Timer ONLY runs when user has clicked Start Viva AND the question is actively displayed!
+  useEffect(() => {
+    if (!session || !hasStarted || !currentQuestion || isCompleted || timeExpired || isTerminated || remainingSeconds === null || submitting) return;
 
     if (remainingSeconds <= 0) {
       handleTimeExpiry();
@@ -168,11 +199,11 @@ export const StudentVivaSession = () => {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [remainingSeconds, session, isCompleted, timeExpired, isTerminated, submitting]);
+  }, [remainingSeconds, session, hasStarted, currentQuestion, isCompleted, timeExpired, isTerminated, submitting]);
 
   // Handle Session Expiry safely
   const handleTimeExpiry = async () => {
-    if (timeExpired || isCompleted || isTerminated) return;
+    if (!hasStarted || !currentQuestion || timeExpired || isCompleted || isTerminated) return;
     setTimeExpired(true);
 
     stopActiveAudioRecording();
@@ -200,7 +231,10 @@ export const StudentVivaSession = () => {
       setHasStarted(true);
     } catch (err) {
       console.warn('Fullscreen request denied:', err);
-      setFullscreenDenied(true);
+      // Fallback: Still allow taking viva even if browser restricts fullscreen
+      setIsFullscreen(true);
+      setFullscreenDenied(false);
+      setHasStarted(true);
     }
   };
 
@@ -380,30 +414,83 @@ export const StudentVivaSession = () => {
     }
   };
 
+  // Mobile & Cross-Browser MediaRecorder helpers
+  const getSupportedAudioMimeType = () => {
+    if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) {
+      return '';
+    }
+    const candidateTypes = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/aac',
+      'audio/ogg;codecs=opus',
+      'audio/wav',
+    ];
+    for (const t of candidateTypes) {
+      if (MediaRecorder.isTypeSupported(t)) {
+        return t;
+      }
+    }
+    return '';
+  };
+
+  const getAudioExtension = (mimeType) => {
+    if (!mimeType) return 'webm';
+    const m = mimeType.toLowerCase();
+    if (m.includes('mp4') || m.includes('m4a')) return 'mp4';
+    if (m.includes('aac')) return 'aac';
+    if (m.includes('ogg')) return 'ogg';
+    if (m.includes('wav')) return 'wav';
+    return 'webm';
+  };
+
   // 5. Audio Recording & Speech Recognition Handlers
   const startRecording = async () => {
     if (timeExpired || isCompleted || isTerminated) return;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioConstraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      };
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+      } catch (err) {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+
       audioChunksRef.current = [];
-      const mediaRecorder = new MediaRecorder(stream);
+      const supportedMime = getSupportedAudioMimeType();
+      const options = supportedMime ? { mimeType: supportedMime } : undefined;
+      const mediaRecorder = options ? new MediaRecorder(stream, options) : new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
+      const actualMime = mediaRecorder.mimeType || supportedMime || 'audio/webm';
+      recordedMimeTypeRef.current = actualMime;
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
+        if (event.data && event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const mime = recordedMimeTypeRef.current || 'audio/webm';
+        const blob = new Blob(audioChunksRef.current, { type: mime });
         setAudioBlob(blob);
         setAudioUrl(URL.createObjectURL(blob));
         stream.getTracks().forEach((track) => track.stop());
+
+        // Automatically trigger speech transcription so mobile users don't have to manually click Process Speech
+        handleProcessSpeechRecognition(blob, mime);
       };
 
-      mediaRecorder.start();
+      // Use timeslice to guarantee continuous chunks on mobile browsers
+      mediaRecorder.start(250);
       setIsRecording(true);
       setRecordingSeconds(0);
 
@@ -411,40 +498,48 @@ export const StudentVivaSession = () => {
         setRecordingSeconds((prev) => prev + 1);
       }, 1000);
 
-      // Browser speech recognition
+      // Browser speech recognition (Desktop Chrome and supported browsers)
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognition) {
-        liveTranscriptRef.current = '';
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
+        try {
+          liveTranscriptRef.current = '';
+          const recognition = new SpeechRecognition();
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = 'en-US';
 
-        recognition.onresult = (event) => {
-          let fullText = '';
-          for (let i = 0; i < event.results.length; i++) {
-            fullText += event.results[i][0].transcript + ' ';
-          }
-          const cleanText = fullText.trim();
-          liveTranscriptRef.current = cleanText;
-          setTranscript(cleanText);
-        };
+          recognition.onresult = (event) => {
+            let fullText = '';
+            for (let i = 0; i < event.results.length; i++) {
+              fullText += event.results[i][0].transcript + ' ';
+            }
+            const cleanText = fullText.trim();
+            if (cleanText) {
+              liveTranscriptRef.current = cleanText;
+              setTranscript(cleanText);
+            }
+          };
 
-        recognition.onerror = (event) => {
-          console.warn('Speech recognition status:', event.error);
-        };
+          recognition.onerror = (event) => {
+            console.warn('Speech recognition status:', event.error);
+          };
 
-        recognition.start();
-        speechRecognitionRef.current = recognition;
+          recognition.start();
+          speechRecognitionRef.current = recognition;
+        } catch (e) {
+          console.warn('Browser speech recognition not started:', e);
+        }
       }
     } catch (err) {
-      alert('Microphone access is required to record your oral viva answer.');
+      alert('Microphone access is required to record your oral viva answer. Please check browser microphone permissions.');
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
       setIsRecording(false);
       clearInterval(recordingTimerRef.current);
     }
@@ -455,21 +550,26 @@ export const StudentVivaSession = () => {
     }
   };
 
-  // Upload Audio for Speech Recognition
-  const handleProcessSpeechRecognition = async () => {
-    if (!audioBlob || !currentQuestion || timeExpired || isCompleted || isTerminated) return;
+  // Upload Audio for Speech Recognition (supports direct blob argument for mobile auto-transcription)
+  const handleProcessSpeechRecognition = async (explicitBlob = null, explicitMime = null) => {
+    const blobToUpload = explicitBlob instanceof Blob ? explicitBlob : audioBlob;
+    const mimeToUse = explicitMime || recordedMimeTypeRef.current || 'audio/webm';
+    if (!blobToUpload || !currentQuestion || timeExpired || isCompleted || isTerminated) return;
 
     setAsrLoading(true);
     try {
+      const ext = getAudioExtension(mimeToUse);
       const formData = new FormData();
-      formData.append('audio', audioBlob, 'response.webm');
+      formData.append('audio', blobToUpload, `response.${ext}`);
       const res = await studentService.uploadAudio(currentQuestion.id, formData);
 
       const serverAsrText = (res.data.original_asr_transcript || '').trim();
       const finalAsrText = serverAsrText || liveTranscriptRef.current || transcript;
 
-      setOriginalAsr(finalAsrText);
-      setTranscript(finalAsrText);
+      if (finalAsrText) {
+        setOriginalAsr(finalAsrText);
+        setTranscript(finalAsrText);
+      }
     } catch (err) {
       if (err.response?.data?.time_expired) {
         handleTimeExpiry();
@@ -478,7 +578,7 @@ export const StudentVivaSession = () => {
           setTranscript(liveTranscriptRef.current);
           setOriginalAsr(liveTranscriptRef.current);
         } else {
-          alert('Speech recognition could not process this recording. Please try recording again.');
+          console.warn('Audio transcription notice:', err);
         }
       }
     } finally {
@@ -565,15 +665,27 @@ export const StudentVivaSession = () => {
         </div>
         <h2 className="text-xl font-bold text-slate-800">Unable to Access Viva</h2>
         <p className="text-sm text-slate-600">{error}</p>
-        <Button variant="primary" onClick={() => navigate('/student/vivas')}>
-          Return to Assessments
-        </Button>
+        <div className="flex justify-center gap-3 pt-2">
+          <Button variant="primary" onClick={() => window.location.reload()}>
+            Retry Viva
+          </Button>
+          <Button variant="outline" onClick={() => navigate('/student/vivas')}>
+            Return to Assessments
+          </Button>
+        </div>
       </div>
     );
   }
 
   // 7. COMPLETION / TERMINATION SCREEN
-  if (isCompleted && finalResult) {
+  if (isCompleted) {
+    if (!finalResult) {
+      return (
+        <div className="max-w-3xl mx-auto space-y-6 py-12 text-center">
+          <LoadingState message="Finalizing your viva assessment report..." />
+        </div>
+      );
+    }
     return (
       <div className="max-w-3xl mx-auto space-y-6 py-6">
         <Card className={`border-t-4 shadow-md ${
@@ -667,6 +779,80 @@ export const StudentVivaSession = () => {
                 </span>
               </div>
             </div>
+
+            {/* Post-Exam Question-by-Question Review */}
+            {finalResult.questions_review && finalResult.questions_review.length > 0 && (
+              <div className="mt-6 pt-4 border-t border-slate-200 text-left space-y-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <FileText className="w-4 h-4 text-blue-600" />
+                  <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
+                    Post-Exam Assessment Review & Model Answers
+                  </h3>
+                </div>
+                <div className="space-y-3">
+                  {finalResult.questions_review.map((q) => (
+                    <div
+                      key={q.question_order}
+                      className="p-4 rounded-xl border border-slate-200 bg-white space-y-3 shadow-sm text-left"
+                    >
+                      {/* Question Header & Score */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                        <div className="space-y-0.5">
+                          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+                            Question {q.question_order}
+                          </span>
+                          <h4 className="text-sm font-semibold text-slate-900 leading-snug">
+                            {q.question_text}
+                          </h4>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {q.is_counted && (
+                            <Badge variant="success" className="text-[10px]">
+                              Counted in Final Score
+                            </Badge>
+                          )}
+                          <span className="text-sm font-bold font-mono text-blue-900 px-2.5 py-1 bg-blue-50 border border-blue-200 rounded-lg">
+                            {q.score} / {q.max_score || 10.0}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Student's Actual Answer */}
+                      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200/80">
+                        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                          Your Spoken / Submitted Answer:
+                        </span>
+                        <p className="text-xs text-slate-800 italic leading-relaxed whitespace-pre-wrap">
+                          "{q.student_answer || 'No answer recorded.'}"
+                        </p>
+                      </div>
+
+                      {/* Reason for Scoring */}
+                      <div className="p-3 bg-blue-50/50 rounded-lg border border-blue-100">
+                        <span className="text-[11px] font-bold text-blue-900 uppercase tracking-wider block mb-1">
+                          Evaluator Feedback & Scoring Reason:
+                        </span>
+                        <p className="text-xs text-blue-950 leading-relaxed">
+                          {q.reason || 'Graded against academic rubric.'}
+                        </p>
+                      </div>
+
+                      {/* Suggested Full-Mark Answer */}
+                      {q.improved_answer && (
+                        <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-200">
+                          <span className="text-[11px] font-bold text-emerald-900 uppercase tracking-wider block mb-1">
+                            Suggested Full-Mark Answer (Reference):
+                          </span>
+                          <p className="text-xs text-emerald-950 leading-relaxed whitespace-pre-wrap">
+                            {q.improved_answer}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="pt-4 flex justify-center gap-3">
               <Button

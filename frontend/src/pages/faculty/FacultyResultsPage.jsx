@@ -87,17 +87,35 @@ export const FacultyResultsPage = () => {
       const res = await api.get(`/faculty/vivas/${selectedVivaId}/results/export`, {
         responseType: 'blob',
       });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const contentType = res.headers?.['content-type'] || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      const isCsv = contentType.includes('csv');
+      const ext = isCsv ? 'csv' : 'xlsx';
+      const blob = new Blob([res.data], { type: contentType });
+      const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
       const vivaObj = vivas.find((v) => v.id === selectedVivaId);
       const titleClean = (vivaObj?.title || 'Viva_Results').replace(/[^a-zA-Z0-9_\-]/g, '_');
-      link.setAttribute('download', `${titleClean}_Marks.xlsx`);
+      link.setAttribute('download', `${titleClean}_Marks.${ext}`);
       document.body.appendChild(link);
       link.click();
       link.remove();
+      setTimeout(() => window.URL.revokeObjectURL(url), 1000);
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to download marks report.');
+      console.error('Download marks error:', err);
+      let errMsg = 'Failed to download marks report.';
+      if (err.response?.data) {
+        if (err.response.data instanceof Blob) {
+          try {
+            const errText = await err.response.data.text();
+            const errJson = JSON.parse(errText);
+            if (errJson.error) errMsg = errJson.error;
+          } catch {}
+        } else if (err.response.data.error) {
+          errMsg = err.response.data.error;
+        }
+      }
+      alert(errMsg);
     } finally {
       setDownloading(false);
     }
@@ -176,7 +194,7 @@ export const FacultyResultsPage = () => {
             size="sm"
             icon={Download}
             loading={downloading}
-            disabled={results.length === 0 || !selectedVivaId}
+            disabled={!selectedVivaId || (results.length === 0 && studentSummaries.length === 0)}
             onClick={handleDownloadMarks}
             className="shrink-0"
           >

@@ -1,17 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { studentService } from '../../services/api';
 import { Card, Badge, LoadingState, EmptyState } from '../../components/UI';
-import { Award, Calendar, CheckCircle2 } from 'lucide-react';
+import { Award, Calendar, CheckCircle2, ChevronDown, ChevronUp, FileText } from 'lucide-react';
 
 export const StudentResultsPage = () => {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [expandedReviews, setExpandedReviews] = useState({});
 
   useEffect(() => {
     const fetchResults = async () => {
       try {
         const res = await studentService.getMyResults();
-        setResults(res.data.results || []);
+        const data = res.data.results || [];
+        setResults(data);
+        if (data.length > 0) {
+          setExpandedReviews({ [data[0].id]: true });
+        }
       } catch (err) {
         console.error('Failed to load results:', err);
       } finally {
@@ -20,6 +25,13 @@ export const StudentResultsPage = () => {
     };
     fetchResults();
   }, []);
+
+  const toggleReview = (id) => {
+    setExpandedReviews((prev) => ({
+      ...prev,
+      [id]: !prev[id],
+    }));
+  };
 
   if (loading) return <LoadingState message="Loading your viva assessment grades..." />;
 
@@ -103,6 +115,92 @@ export const StudentResultsPage = () => {
                   )}
                 </div>
               </div>
+
+              {/* Post-Exam Question-by-Question Review */}
+              {r.questions_review && r.questions_review.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => toggleReview(r.id)}
+                    className="w-full flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 transition-colors"
+                  >
+                    <span className="flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-blue-600" />
+                      Detailed Post-Exam Review & Model Answers ({r.questions_review.length} Questions)
+                    </span>
+                    {expandedReviews[r.id] ? (
+                      <ChevronUp className="w-4 h-4 text-slate-400" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-slate-400" />
+                    )}
+                  </button>
+
+                  {expandedReviews[r.id] && (
+                    <div className="mt-3 space-y-3">
+                      {r.questions_review.map((q) => (
+                        <div
+                          key={q.question_order}
+                          className="p-4 rounded-xl border border-slate-200 bg-white space-y-3 shadow-sm text-left"
+                        >
+                          {/* Question Header & Score */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                            <div className="space-y-0.5">
+                              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+                                Question {q.question_order}
+                              </span>
+                              <h4 className="text-sm font-semibold text-slate-900 leading-snug">
+                                {q.question_text}
+                              </h4>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              {q.is_counted && (
+                                <Badge variant="success" className="text-[10px]">
+                                  Counted in Final Score
+                                </Badge>
+                              )}
+                              <span className="text-sm font-bold font-mono text-blue-900 px-2.5 py-1 bg-blue-50 border border-blue-200 rounded-lg">
+                                {q.score} / {q.max_score || 10.0}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Student's Actual Answer */}
+                          <div className="p-3 bg-slate-50 rounded-lg border border-slate-200/80">
+                            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                              Your Spoken / Submitted Answer:
+                            </span>
+                            <p className="text-xs text-slate-800 italic leading-relaxed whitespace-pre-wrap">
+                              "{q.student_answer || 'No answer recorded.'}"
+                            </p>
+                          </div>
+
+                          {/* Reason for Scoring */}
+                          <div className="p-3 bg-blue-50/50 rounded-lg border border-blue-100">
+                            <span className="text-[11px] font-bold text-blue-900 uppercase tracking-wider block mb-1">
+                              Evaluator Feedback & Scoring Reason:
+                            </span>
+                            <p className="text-xs text-blue-950 leading-relaxed">
+                              {q.reason || 'Graded against academic rubric.'}
+                            </p>
+                          </div>
+
+                          {/* Suggested Full-Mark Answer */}
+                          {q.improved_answer && (
+                            <div className="p-3 bg-emerald-50/60 rounded-lg border border-emerald-200">
+                              <span className="text-[11px] font-bold text-emerald-900 uppercase tracking-wider block mb-1">
+                                Suggested Full-Mark Answer (Reference):
+                              </span>
+                              <p className="text-xs text-emerald-950 leading-relaxed whitespace-pre-wrap">
+                                {q.improved_answer}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </Card>
           ))}
         </div>

@@ -12,6 +12,15 @@ def create_app(config_class=None):
 
     app.config.from_object(config_class)
 
+    # Enforce PostgreSQL - SQLite fallback permanently disabled
+    db_uri = app.config.get("SQLALCHEMY_DATABASE_URI")
+    if not db_uri or not db_uri.startswith("postgresql://"):
+        raise RuntimeError(
+            "FATAL: DATABASE_URL is missing or not configured for PostgreSQL in backend/.env. "
+            "SQLite fallback has been permanently disabled. "
+            "Please configure a valid Neon PostgreSQL connection string in backend/.env."
+        )
+
     # Initialize extensions
     db.init_app(app)
     migrate.init_app(app, db)
@@ -23,7 +32,8 @@ def create_app(config_class=None):
                     r"^http://localhost(:\d+)?$",
                     r"^http://127\.0\.0\.1(:\d+)?$",
                     r"^https://.*\.vercel\.app$",
-                ]
+                ],
+                "expose_headers": ["Content-Disposition", "Content-Type"],
             }
         },
         supports_credentials=True,

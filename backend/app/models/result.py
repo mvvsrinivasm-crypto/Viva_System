@@ -25,7 +25,7 @@ class Result(db.Model):
     # Relationships
     audits = db.relationship("MarkAudit", backref="result", lazy="dynamic", order_by="MarkAudit.created_at.desc()")
 
-    def to_dict(self, include_audits: bool = False) -> dict:
+    def to_dict(self, include_audits: bool = False, include_questions: bool = True) -> dict:
         data = {
             "id": self.id,
             "session_id": self.session_id,
@@ -40,4 +40,35 @@ class Result(db.Model):
         }
         if include_audits:
             data["audits"] = [audit.to_dict() for audit in self.audits.all()]
+
+        sess = self.session
+        if not sess and self.session_id:
+            from app.models.viva_session import VivaSession
+            sess = db.session.get(VivaSession, self.session_id)
+
+        if include_questions and sess:
+            questions_review = []
+            for sq in sorted(sess.session_questions, key=lambda x: x.question_order):
+                eval_obj = sq.answer.evaluation if (sq.answer and sq.answer.evaluation) else None
+                student_ans = ""
+                if sq.answer:
+                    student_ans = (sq.answer.edited_transcript or sq.answer.original_asr_transcript or "").strip()
+                q_text = sq.question.question_text if sq.question else ""
+                ref_ans = sq.question.reference_answer if sq.question else ""
+                score = round(eval_obj.ai_score, 2) if eval_obj else 0.0
+                reason = eval_obj.evaluation_reason if eval_obj else "No answer submitted."
+                improved_ans = (eval_obj.improved_answer if (eval_obj and eval_obj.improved_answer) else ref_ans) or ref_ans
+
+                questions_review.append({
+                    "question_order": sq.question_order,
+                    "question_text": q_text,
+                    "student_answer": student_ans or "No answer provided.",
+                    "score": score,
+                    "max_score": 10.0,
+                    "reason": reason,
+                    "improved_answer": improved_ans,
+                    "is_counted": sq.question_order in (self.counted_question_1, self.counted_question_2),
+                })
+            data["questions_review"] = questions_review
+
         return data

@@ -18,6 +18,20 @@ def client():
     app.config["TESTING"] = True
     with app.test_client() as client:
         with app.app_context():
+            db.create_all()
+            if not User.query.filter_by(email="admin@klu.ac.in").first():
+                admin = User(name="Administrator", email="admin@klu.ac.in", role=Role.ADMIN)
+                admin.set_password("admin123")
+                db.session.add(admin)
+            if not User.query.filter_by(email="faculty@klu.ac.in").first():
+                faculty = User(name="Faculty User", email="faculty@klu.ac.in", role=Role.FACULTY)
+                faculty.set_password("faculty123")
+                db.session.add(faculty)
+            if not User.query.filter_by(email="student@klu.ac.in").first():
+                student = User(name="Student User", email="student@klu.ac.in", role=Role.STUDENT)
+                student.set_password("student123")
+                db.session.add(student)
+            db.session.commit()
             yield client
 
 
