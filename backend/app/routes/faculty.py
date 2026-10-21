@@ -1,5 +1,6 @@
 import io
 import re
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 import os
@@ -8,6 +9,8 @@ from flask import Blueprint, request, jsonify, g, current_app, send_file
 from werkzeug.utils import secure_filename
 from sqlalchemy.orm import selectinload
 from app.extensions import db
+
+logger = logging.getLogger(__name__)
 from app.models.user import User, Role
 from app.models.viva import Viva, VivaStatus
 from app.models.document import Document
@@ -745,7 +748,7 @@ def get_faculty_all_results():
 
 
 @faculty_bp.route("/vivas/<int:viva_id>/results/export", methods=["GET"])
-@faculty_required
+@faculty_or_admin_required
 def export_viva_results(viva_id):
     """
     Generate and download student marks report as Excel (.xlsx) file.
@@ -753,7 +756,7 @@ def export_viva_results(viva_id):
     Excludes admin-only audit records.
     """
     viva = db.session.get(Viva, viva_id)
-    if not viva or viva.faculty_id != g.current_user.id:
+    if not viva or (viva.faculty_id != g.current_user.id and g.current_user.role != Role.ADMIN):
         return jsonify({"error": "Viva not found or access denied."}), 404
 
     sessions = (
@@ -761,14 +764,31 @@ def export_viva_results(viva_id):
         .options(
             selectinload(VivaSession.student),
             selectinload(VivaSession.result),
+            selectinload(VivaSession.session_questions).selectinload(SessionQuestion.answer).selectinload(Answer.evaluation),
         )
         .order_by(VivaSession.started_at.desc())
         .all()
     )
 
+    headers = [
+        "Viva Name",
+        "Student Name",
+        "Register Number",
+        "Institutional Email",
+        "Question 1 Score",
+        "Question 2 Score",
+        "Question 3 Score",
+        "Best 2 Score",
+        "Maximum Score",
+        "Status",
+        "Viva Date",
+        "Completed At",
+    ]
+
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -787,20 +807,6 @@ def export_viva_results(viva_id):
         sub_cell.font = Font(name="Calibri", size=10, italic=True, color="475569")
         sub_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        headers = [
-            "Viva Name",
-            "Student Name",
-            "Register Number",
-            "Institutional Email",
-            "Question 1 Score",
-            "Question 2 Score",
-            "Question 3 Score",
-            "Best 2 Score",
-            "Maximum Score",
-            "Status",
-            "Viva Date",
-            "Completed At",
-        ]
         ws.append([])  # blank row 3
         ws.append(headers)  # row 4
 
@@ -823,10 +829,19 @@ def export_viva_results(viva_id):
 
         row_idx = 5
         for s in sessions:
-            q1 = s.result.q1_score if s.result else 0.0
-            q2 = s.result.q2_score if s.result else 0.0
-            q3 = s.result.q3_score if s.result else 0.0
-            final = s.result.final_score if s.result else 0.0
+            if s.result:
+                q1 = s.result.q1_score
+                q2 = s.result.q2_score
+                q3 = s.result.q3_score
+                final = s.result.final_score
+            else:
+                sq_map = {sq.question_order: sq for sq in s.session_questions}
+                q1 = sq_map[1].answer.evaluation.ai_score if (1 in sq_map and sq_map[1].answer and sq_map[1].answer.evaluation) else 0.0
+                q2 = sq_map[2].answer.evaluation.ai_score if (2 in sq_map and sq_map[2].answer and sq_map[2].answer.evaluation) else 0.0
+                q3 = sq_map[3].answer.evaluation.ai_score if (3 in sq_map and sq_map[3].answer and sq_map[3].answer.evaluation) else 0.0
+                sorted_scores = sorted([q1, q2, q3], reverse=True)
+                final = round(sorted_scores[0] + sorted_scores[1], 2)
+
             viva_date = s.started_at.strftime("%Y-%m-%d %H:%M") if s.started_at else "-"
             comp_date = s.completed_at.strftime("%Y-%m-%d %H:%M") if s.completed_at else "-"
 
@@ -853,10 +868,10 @@ def export_viva_results(viva_id):
                     c.alignment = Alignment(horizontal="center")
             row_idx += 1
 
-        for col in ws.columns:
-            max_len = max(len(str(cell.value or "")) for cell in col)
-            col_letter = openpyxl.utils.get_column_letter(col[0].column)
-            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+        for col in ws.iter_cols(min_row=4, max_row=ws.max_row):
+            max_len = max((len(str(cell.value or "")) for cell in col), default=10)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
 
         output = io.BytesIO()
         wb.save(output)
@@ -865,23 +880,36 @@ def export_viva_results(viva_id):
         sanitized = re.sub(r"[^a-zA-Z0-9_\-]", "_", viva.title).strip("_")
         filename = f"{sanitized}_Marks.xlsx"
 
-        return send_file(
+        resp = send_file(
             output,
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             as_attachment=True,
             download_name=filename,
         )
+        resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        resp.headers["Access-Control-Expose-Headers"] = "Content-Disposition, Content-Type"
+        return resp
     except Exception as e:
+        logger.error("Excel generation error: %s", e, exc_info=True)
         # Fallback to CSV if any openpyxl issue arises
         import csv
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(headers)
         for s in sessions:
-            q1 = s.result.q1_score if s.result else 0.0
-            q2 = s.result.q2_score if s.result else 0.0
-            q3 = s.result.q3_score if s.result else 0.0
-            final = s.result.final_score if s.result else 0.0
+            if s.result:
+                q1 = s.result.q1_score
+                q2 = s.result.q2_score
+                q3 = s.result.q3_score
+                final = s.result.final_score
+            else:
+                sq_map = {sq.question_order: sq for sq in s.session_questions}
+                q1 = sq_map[1].answer.evaluation.ai_score if (1 in sq_map and sq_map[1].answer and sq_map[1].answer.evaluation) else 0.0
+                q2 = sq_map[2].answer.evaluation.ai_score if (2 in sq_map and sq_map[2].answer and sq_map[2].answer.evaluation) else 0.0
+                q3 = sq_map[3].answer.evaluation.ai_score if (3 in sq_map and sq_map[3].answer and sq_map[3].answer.evaluation) else 0.0
+                sorted_scores = sorted([q1, q2, q3], reverse=True)
+                final = round(sorted_scores[0] + sorted_scores[1], 2)
+
             writer.writerow([
                 viva.title,
                 s.student.name if s.student else "Student",
@@ -894,9 +922,12 @@ def export_viva_results(viva_id):
             ])
         mem = io.BytesIO(output.getvalue().encode("utf-8"))
         sanitized = re.sub(r"[^a-zA-Z0-9_\-]", "_", viva.title).strip("_")
-        return send_file(
+        resp = send_file(
             mem,
             mimetype="text/csv",
             as_attachment=True,
             download_name=f"{sanitized}_Marks.csv",
         )
+        resp.headers["Content-Disposition"] = f'attachment; filename="{sanitized}_Marks.csv"'
+        resp.headers["Access-Control-Expose-Headers"] = "Content-Disposition, Content-Type"
+        return resp

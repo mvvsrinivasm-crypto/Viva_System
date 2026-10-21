@@ -11,11 +11,11 @@ class Config:
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "kare-jwt-super-secret-key-2026-viva-system")
     JWT_ACCESS_TOKEN_EXPIRES_HOURS = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_HOURS", "24"))
 
-    # Database
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
-    # Neon postgres compatibility: ensure 'postgresql://' instead of 'postgres://'
-    if SQLALCHEMY_DATABASE_URI and SQLALCHEMY_DATABASE_URI.startswith("postgres://"):
-        SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI.replace("postgres://", "postgresql://", 1)
+    # Database (Permanently configured for Neon PostgreSQL - No SQLite fallback)
+    _db_url = (os.getenv("DATABASE_URL") or "").strip()
+    if _db_url.startswith("postgres://"):
+        _db_url = _db_url.replace("postgres://", "postgresql://", 1)
+    SQLALCHEMY_DATABASE_URI = _db_url
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {

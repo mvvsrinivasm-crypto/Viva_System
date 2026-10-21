@@ -36,15 +36,33 @@ class VivaService:
         ).order_by(VivaSession.started_at.desc()).first()
 
         if existing_session and existing_session.status == SessionStatus.IN_PROGRESS:
-            if existing_session.expires_at is None:
-                duration_sec = viva.duration_seconds if viva.duration_seconds else 120
-                st = existing_session.started_at
-                if st and st.tzinfo is None:
-                    st = st.replace(tzinfo=timezone.utc)
-                elif not st:
-                    st = datetime.now(timezone.utc)
-                existing_session.expires_at = st + timedelta(seconds=duration_sec)
+            # Ensure questions exist
+            if not existing_session.session_questions:
+                questions = Question.query.filter_by(viva_id=viva_id).all()
+                if len(questions) >= 3:
+                    selected_questions = random.sample(questions, 3)
+                    for order, q in enumerate(selected_questions, start=1):
+                        sq = SessionQuestion(
+                            session_id=existing_session.id,
+                            question_id=q.id,
+                            question_order=order,
+                        )
+                        db.session.add(sq)
+                    db.session.commit()
+
+            duration_sec = viva.duration_seconds if viva.duration_seconds else 120
+            now = datetime.now(timezone.utc)
+            # Check if student has submitted any evaluated answers
+            has_evaluated_answers = any(
+                sq.answer and sq.answer.evaluation for sq in existing_session.session_questions
+            )
+            # If no answers were ever evaluated and session timer is expired or missing, grant fresh timer window
+            exp = existing_session.expires_at if (existing_session.expires_at and existing_session.expires_at.tzinfo) else (existing_session.expires_at.replace(tzinfo=timezone.utc) if existing_session.expires_at else None)
+            if not has_evaluated_answers and (exp is None or exp <= now):
+                existing_session.started_at = now
+                existing_session.expires_at = now + timedelta(seconds=duration_sec)
                 db.session.commit()
+
             return existing_session
 
         if existing_session and existing_session.status == SessionStatus.COMPLETED:

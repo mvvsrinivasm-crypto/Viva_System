@@ -50,6 +50,13 @@ class VivaSession(db.Model):
             elapsed = (now - v_start).total_seconds()
             remaining_violation_sec = max(0, int(10 - elapsed))
 
+        def _to_utc_iso(dt):
+            if not dt:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.isoformat()
+
         return {
             "id": self.id,
             "viva_id": self.viva_id,
@@ -58,13 +65,13 @@ class VivaSession(db.Model):
             "student_id": self.student_id,
             "student_name": self.student.name if self.student else None,
             "student_email": self.student.email if self.student else None,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "started_at": _to_utc_iso(self.started_at),
+            "expires_at": _to_utc_iso(self.expires_at),
             "remaining_seconds": remaining_sec,
-            "active_violation_started_at": self.active_violation_started_at.isoformat() if self.active_violation_started_at else None,
+            "active_violation_started_at": _to_utc_iso(self.active_violation_started_at),
             "active_violation_type": self.active_violation_type,
             "remaining_violation_seconds": remaining_violation_sec,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "completed_at": _to_utc_iso(self.completed_at),
             "status": self.status,
             "has_result": self.result is not None,
         }

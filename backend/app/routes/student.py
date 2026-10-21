@@ -5,6 +5,7 @@ import uuid
 import logging
 from flask import Blueprint, request, jsonify, g, current_app
 from werkzeug.utils import secure_filename
+from sqlalchemy.orm import selectinload
 from app.extensions import db
 from app.models.viva import Viva, VivaStatus
 from app.models.viva_session import VivaSession, SessionStatus
@@ -137,27 +138,41 @@ def start_viva(viva_id):
                 "result": result.to_dict(include_audits=False),
             }), 200
 
-    # Check if session time already expired
-    if _is_session_expired(session):
-        result = VivaService.finalize_session(session.id, status=SessionStatus.TIME_EXPIRED)
-        return jsonify({
-            "message": "Your viva session time has ended.",
-            "time_expired": True,
-            "session": session.to_dict(),
-            "result": result.to_dict(include_audits=False),
-        }), 200
-
     current_sq, history = _get_current_active_question(session)
 
+    # Check if session time already expired only if student was actively answering
+    if _is_session_expired(session):
+        if len(history) > 0:
+            result = VivaService.finalize_session(session.id, status=SessionStatus.TIME_EXPIRED)
+            return jsonify({
+                "message": "Your viva session time has ended.",
+                "time_expired": True,
+                "session": session.to_dict(),
+                "result": result.to_dict(include_audits=False),
+            }), 200
+        else:
+            duration_sec = session.viva.duration_seconds if session.viva and session.viva.duration_seconds else 120
+            now = datetime.now(timezone.utc)
+            session.started_at = now
+            session.expires_at = now + timedelta(seconds=duration_sec)
+            db.session.commit()
+
     if not current_sq:
-        # All 3 questions answered
-        result = VivaService.finalize_session(session.id, status=SessionStatus.COMPLETED)
-        return jsonify({
-            "message": "Viva assessment completed.",
-            "session": session.to_dict(),
-            "is_completed": True,
-            "result": result.to_dict(include_audits=False),
-        }), 200
+        if len(history) >= 3:
+            # All 3 questions genuinely completed and evaluated
+            result = VivaService.finalize_session(session.id, status=SessionStatus.COMPLETED)
+            return jsonify({
+                "message": "Viva assessment completed.",
+                "session": session.to_dict(),
+                "is_completed": True,
+                "result": result.to_dict(include_audits=False),
+            }), 200
+        else:
+            return jsonify({
+                "error": "Failed to load viva questions. Please retry.",
+                "session": session.to_dict(),
+                "questions_failed": True,
+            }), 400
 
     # ONLY send the current active question
     question_payload = {
@@ -219,16 +234,25 @@ def get_session(session_id):
                 "result": result.to_dict(include_audits=False),
             }), 200
 
+    current_sq, history = _get_current_active_question(session)
+
     # Check expiration
     if session.status == SessionStatus.IN_PROGRESS and _is_session_expired(session):
-        result = VivaService.finalize_session(session.id, status=SessionStatus.TIME_EXPIRED)
-        return jsonify({
-            "message": "Your viva session time has ended.",
-            "time_expired": True,
-            "is_completed": True,
-            "session": session.to_dict(),
-            "result": result.to_dict(include_audits=False),
-        }), 200
+        if len(history) > 0:
+            result = VivaService.finalize_session(session.id, status=SessionStatus.TIME_EXPIRED)
+            return jsonify({
+                "message": "Your viva session time has ended.",
+                "time_expired": True,
+                "is_completed": True,
+                "session": session.to_dict(),
+                "result": result.to_dict(include_audits=False),
+            }), 200
+        else:
+            duration_sec = session.viva.duration_seconds if session.viva and session.viva.duration_seconds else 120
+            now = datetime.now(timezone.utc)
+            session.started_at = now
+            session.expires_at = now + timedelta(seconds=duration_sec)
+            db.session.commit()
 
     if session.status in (SessionStatus.COMPLETED, SessionStatus.TIME_EXPIRED, SessionStatus.TERMINATED_FOR_VIOLATION):
         return jsonify({
@@ -239,15 +263,20 @@ def get_session(session_id):
             "result": session.result.to_dict(include_audits=False) if session.result else None,
         }), 200
 
-    current_sq, history = _get_current_active_question(session)
-
     if not current_sq:
-        result = VivaService.finalize_session(session.id, status=SessionStatus.COMPLETED)
-        return jsonify({
-            "session": session.to_dict(),
-            "is_completed": True,
-            "result": result.to_dict(include_audits=False),
-        }), 200
+        if len(history) >= 3:
+            result = VivaService.finalize_session(session.id, status=SessionStatus.COMPLETED)
+            return jsonify({
+                "session": session.to_dict(),
+                "is_completed": True,
+                "result": result.to_dict(include_audits=False),
+            }), 200
+        else:
+            return jsonify({
+                "error": "Failed to load viva questions. Please retry.",
+                "session": session.to_dict(),
+                "questions_failed": True,
+            }), 400
 
     question_payload = {
         "id": current_sq.id,
@@ -316,7 +345,7 @@ def upload_audio(sq_id):
     # Transcribe via Speech Recognition service
     asr_service = ASRService(current_app.config)
     question_context = sq.question.question_text if sq.question else ""
-    mime_type = request.content_type or "audio/webm"
+    mime_type = getattr(audio_file, "content_type", None) or "audio/webm"
 
     try:
         asr_transcript = asr_service.transcribe_audio(saved_path, context_hint=question_context, mime_type=mime_type)
@@ -712,15 +741,25 @@ def check_violation_expiry(session_id):
 @student_required
 def get_my_results():
     """List student's own completed results. Audits are NEVER exposed to student."""
-    sessions = VivaSession.query.filter(
-        VivaSession.student_id == g.current_user.id,
-        VivaSession.status.in_([SessionStatus.COMPLETED, SessionStatus.TIME_EXPIRED, SessionStatus.TERMINATED_FOR_VIOLATION])
-    ).order_by(VivaSession.completed_at.desc()).all()
+    sessions = (
+        VivaSession.query.filter(
+            VivaSession.student_id == g.current_user.id,
+            VivaSession.status.in_([SessionStatus.COMPLETED, SessionStatus.TIME_EXPIRED, SessionStatus.TERMINATED_FOR_VIOLATION])
+        )
+        .options(
+            selectinload(VivaSession.viva),
+            selectinload(VivaSession.result),
+            selectinload(VivaSession.session_questions).selectinload(SessionQuestion.question),
+            selectinload(VivaSession.session_questions).selectinload(SessionQuestion.answer).selectinload(Answer.evaluation),
+        )
+        .order_by(VivaSession.completed_at.desc())
+        .all()
+    )
 
     results_data = []
     for s in sessions:
         if s.result:
-            r_data = s.result.to_dict(include_audits=False)
+            r_data = s.result.to_dict(include_audits=False, include_questions=True)
             r_data["viva_title"] = s.viva.title if s.viva else "Viva"
             r_data["status"] = s.status
             r_data["completed_at"] = s.completed_at.isoformat() if s.completed_at else None
