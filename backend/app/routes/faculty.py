@@ -440,7 +440,7 @@ def get_viva_results(viva_id):
     Returns both student-wise evaluated marks (student_summaries) and full chronological attempt records (results).
     """
     viva = db.session.get(Viva, viva_id)
-    if not viva or (viva.faculty_id != g.current_user.id and g.current_user.role != Role.ADMIN):
+    if not viva:
         return jsonify({"error": "Viva not found."}), 404
 
     # Auto-expire/abandon any abandoned in-progress sessions past their expiration
@@ -745,7 +745,7 @@ def get_faculty_all_results():
 
 
 @faculty_bp.route("/vivas/<int:viva_id>/results/export", methods=["GET"])
-@faculty_required
+@faculty_or_admin_required
 def export_viva_results(viva_id):
     """
     Generate and download student marks report as Excel (.xlsx) file.
@@ -753,8 +753,8 @@ def export_viva_results(viva_id):
     Excludes admin-only audit records.
     """
     viva = db.session.get(Viva, viva_id)
-    if not viva or viva.faculty_id != g.current_user.id:
-        return jsonify({"error": "Viva not found or access denied."}), 404
+    if not viva:
+        return jsonify({"error": "Viva not found."}), 404
 
     sessions = (
         VivaSession.query.filter_by(viva_id=viva.id)

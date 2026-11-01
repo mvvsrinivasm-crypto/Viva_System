@@ -87,17 +87,34 @@ export const FacultyResultsPage = () => {
       const res = await api.get(`/faculty/vivas/${selectedVivaId}/results/export`, {
         responseType: 'blob',
       });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const contentType = res.headers['content-type'] || '';
+      const isXlsx = contentType.includes('spreadsheet') || contentType.includes('excel');
+      const ext = isXlsx ? 'xlsx' : 'csv';
+      const blob = new Blob([res.data], {
+        type: contentType || (isXlsx ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv'),
+      });
+      const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
       const vivaObj = vivas.find((v) => v.id === selectedVivaId);
       const titleClean = (vivaObj?.title || 'Viva_Results').replace(/[^a-zA-Z0-9_\-]/g, '_');
-      link.setAttribute('download', `${titleClean}_Marks.xlsx`);
+      link.setAttribute('download', `${titleClean}_Marks.${ext}`);
       document.body.appendChild(link);
       link.click();
       link.remove();
+      window.URL.revokeObjectURL(url);
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to download marks report.');
+      let errorMsg = 'Failed to download marks report.';
+      if (err.response && err.response.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          const json = JSON.parse(text);
+          if (json.error) errorMsg = json.error;
+        } catch (_) {}
+      } else if (err.response?.data?.error) {
+        errorMsg = err.response.data.error;
+      }
+      alert(errorMsg);
     } finally {
       setDownloading(false);
     }
